@@ -1,0 +1,148 @@
+import numpy as np
+import time
+from IPython.display import clear_output
+import matplotlib.pyplot as plt
+from scipy.spatial.distance import pdist, squareform
+
+# --- User Input ---
+num_points = int(input("How many points? ").strip())
+size = int(input("How wide and high? ").strip())
+e = float(input("How much speed is retained after hitting wall? (e.g., 0.9) ").strip())
+stepsize = float(input("How much time per step? (e.g., 0.01) ").strip())
+steps = int(input("How many steps? ").strip())
+p = float(input("What is the pressure coefficient? ").strip())
+
+# --- Initialization ---
+points = np.array(np.random.rand(num_points, 2) * size, dtype=np.single)
+velocity = np.zeros((num_points, 2),dtype=np.single)
+
+# --- Constants for Graphing ---
+# Bins for mapping counts to characters
+GRAPH_BINS = [1, 2, 4, 8, 16, 32]
+# Characters corresponding to the bins
+GRAPH_CHARS = np.array([' ', '.', ':', '*', 'o', '0', 'O'])
+
+# --- Functions ---
+
+def chart(size, points):
+    """
+    Creates a 2D histogram (grid) of point densities.
+    """
+    arr = np.zeros((size, size))
+
+    # Standard binning: [0, 1) -> 0, [1, 2) -> 1, etc.
+    x_indices = points[:, 0].astype(int)
+    y_indices = points[:, 1].astype(int)
+
+    # Filter points that are within the grid boundaries [0, size)
+    valid_x = (x_indices >= 0) & (x_indices < size)
+    valid_y = (y_indices >= 0) & (y_indices < size)
+    valid_indices = valid_x & valid_y
+
+    # Use np.add.at for efficient, thread-safe binning
+    np.add.at(arr, (x_indices[valid_indices], y_indices[valid_indices]), 1)
+    return arr
+
+def graph(points, size=10):
+    """
+    Generates an efficient ASCII art representation of the chart.
+    This is much faster than the original string-building loop.
+    """
+    arr = chart(size, points)
+
+    # Vectorized mapping from counts to characters
+    indices = np.digitize(arr, GRAPH_BINS)
+    char_array = GRAPH_CHARS[indices]
+
+    # Build the output string efficiently using list comprehensions and join
+    rows = ['|' + ' '.join(row) + '|' for row in char_array]
+    footer = '|' + ('_' * (2 * size)) + '|'
+
+    return '\n'.join(rows + [footer])
+
+def grad(points, p_coeff):
+    """
+    Calculates the force gradient and potential energy.
+    """
+    gradi = np.zeros(points.shape)
+    full_distance_matrix = squareform(pdist(points, metric='euclidean'))
+
+    # Create dx and dy matrices (dx_ij = x_i - x_j)
+    dx = np.subtract.outer(points[:, 0], points[:, 0])
+    dy = np.subtract.outer(points[:, 1], points[:, 1])
+
+    potential_e = 0.0
+
+    # Handle division by zero for points at the same location
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # Calculate 1 / r^3
+        inv_dist_cubed = full_distance_matrix**(-3)
+        # Set diagonal (i==j) to 0 to avoid self-interaction
+        np.fill_diagonal(inv_dist_cubed, 0)
+
+        fx = np.sum(dx * inv_dist_cubed, axis=1)
+        fy = np.sum(dy * inv_dist_cubed, axis=1)
+
+        gradi = np.array([fx, fy]).T
+
+    # Return force (-gradient) and potential energy
+    return -1 * gradi
+
+def update(points, velocity, t, size, p_coeff, e_coeff):
+    """
+    Updates point positions and velocities for one time step.
+    Includes corrected wall collision physics.
+    """
+    # Update positions (Euler step)
+    points += velocity * t
+
+    # Apply constant force (e.g., gravity in x-direction)
+    velocity[:, 0] += 10 * t
+
+    # Get particle-particle force and potential energy
+    force = grad(points, p_coeff)
+
+    # Update velocity from particle force (Euler step)
+    velocity += force * p_coeff * t
+
+    # --- Corrected Wall Collisions (Component-wise) ---
+
+    # Find x and y components that are out of bounds
+    hit_x = (points[:, 0] < 0) | (points[:, 0] > size)
+    hit_y = (points[:, 1] < 0) | (points[:, 1] > size)
+
+    # Clip positions back into bounds
+    # Using np.clip is a clean way to handle both <0 and >size
+    points[:, 0] = np.clip(points[:, 0], 0, size)
+    points[:, 1] = np.clip(points[:, 1], 0, size)
+
+    # Reverse and dampen velocity *only for the component that hit*
+    velocity[hit_x, 0] *= -e_coeff
+    velocity[hit_y, 1] *= -e_coeff
+
+    return points, velocity
+
+print("Starting simulation...")
+time.sleep(1) # Pause to see the message
+
+for i in range(steps):
+    start = time.time()
+
+    # 1. Generate and print the current frame
+    frame = graph(points, size)
+    print(frame)
+    print(f'Time Step: {i} / {steps}')
+
+    # 2. Update the simulation
+    points, velocity = update(points, velocity, stepsize, size, p, e)
+    end = time.time()
+
+    # 4. Clear output and manage frame rate
+    clear_output(wait=True)
+
+    elapsed = end - start
+    if elapsed < stepsize:
+        time.sleep(stepsize - elapsed)
+    else:
+        lag_ratio = elapsed / stepsize
+        print(f'Lag Error: {lag_ratio:.2f} times slower')
